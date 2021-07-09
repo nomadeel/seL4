@@ -181,7 +181,6 @@ static exception_t invokeSchedContext_YieldTo(sched_context_t *sc, word_t *buffe
 
     bool_t return_now = true;
     if (isSchedulable(sc->scTcb)) {
-        refill_unblock_check(sc);
         if (SMP_COND_STATEMENT(sc->scCore != getCurrentCPUIndex() ||)
             sc->scTcb->tcbPriority < NODE_STATE(ksCurThread)->tcbPriority) {
             tcbSchedDequeue(sc->scTcb);
@@ -225,6 +224,16 @@ static exception_t decodeSchedContext_YieldTo(sched_context_t *sc, word_t *buffe
     if (sc->scTcb->tcbPriority > NODE_STATE(ksCurThread)->tcbMCP) {
         userError("SchedContext_YieldTo: insufficient mcp (%lu) to yield to a thread with prio (%lu)",
                   (unsigned long) NODE_STATE(ksCurThread)->tcbMCP, (unsigned long) sc->scTcb->tcbPriority);
+        current_syscall_error.type = seL4_IllegalOperation;
+        return EXCEPTION_SYSCALL_ERROR;
+    }
+
+    // This should not be possible as the currently running thread
+    // should never have a non-null yieldTo, however verifying this
+    // invariant is being left to future work.
+    assert(NODE_STATE(ksCurThread)->tcbYieldTo == NULL);
+    if (NODE_STATE(ksCurThread)->tcbYieldTo != NULL) {
+        userError("SchedContext_YieldTo: cannot seL4_SchedContext_YieldTo to more than on SC at a time");
         current_syscall_error.type = seL4_IllegalOperation;
         return EXCEPTION_SYSCALL_ERROR;
     }
@@ -287,6 +296,9 @@ void schedContext_bindTCB(sched_context_t *sc, tcb_t *tcb)
 
     SMP_COND_STATEMENT(migrateTCB(tcb, sc->scCore));
 
+    if (sc_sporadic(sc) && sc_active(sc) && sc != NODE_STATE(ksCurSC)) {
+        refill_unblock_check(sc);
+    }
     schedContext_resume(sc);
     if (isSchedulable(tcb)) {
         SCHED_ENQUEUE(tcb);

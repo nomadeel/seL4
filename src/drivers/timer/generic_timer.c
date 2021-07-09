@@ -12,10 +12,17 @@ BOOT_CODE void initGenericTimer(void)
         /* check the frequency is correct */
         word_t gpt_cntfrq = 0;
         SYSTEM_READ_WORD(CNTFRQ, gpt_cntfrq);
-        /* The CNTFRQ register is 32-bits and is safe to compare with TIMER_CLOCK_HZ. */
-        if (gpt_cntfrq != 0 && gpt_cntfrq != TIMER_CLOCK_HZ) {
-            printf("Warning:  gpt_cntfrq %lu, expected %u\n", gpt_cntfrq,
-                   (uint32_t) TIMER_CLOCK_HZ);
+        /* The CNTFRQ register is a 32-bit register, its value can safely be
+         * compared with TIMER_CLOCK_HZ.
+         */
+        if ((gpt_cntfrq != 0) && (gpt_cntfrq != TIMER_CLOCK_HZ)) {
+            /* TIMER_CLOCK_HZ is supposed to be a 64-bit value, but that is not
+             * really enforced, it could be any integer type. Variable args
+             * require the type to be very well defined to work properly, so
+             * casting explicitly to unit64_t here is the best option.
+             */
+            printf("Warning:  gpt_cntfrq %"SEL4_PRIu_word", expected %"PRIu64"\n",
+                   gpt_cntfrq, (uint64_t)TIMER_CLOCK_HZ);
         }
     }
 

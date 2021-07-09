@@ -18,10 +18,10 @@
 #include <util.h>
 
 /* (node-local) state accessed only during bootstrapping */
-ndks_boot_t ndks_boot BOOT_BSS;
+BOOT_BSS ndks_boot_t ndks_boot;
 
-rootserver_mem_t rootserver BOOT_BSS;
-static region_t rootserver_mem BOOT_BSS;
+BOOT_BSS rootserver_mem_t rootserver;
+BOOT_BSS static region_t rootserver_mem;
 
 BOOT_CODE static void merge_regions(void)
 {
@@ -96,13 +96,11 @@ BOOT_CODE bool_t reserve_region(p_region_t reg)
 
 BOOT_CODE bool_t insert_region(region_t reg)
 {
-    word_t i;
-
     assert(reg.start <= reg.end);
     if (is_reg_empty(reg)) {
         return true;
     }
-    for (i = 0; i < MAX_NUM_FREEMEM_REG; i++) {
+    for (word_t i = 0; i < MAX_NUM_FREEMEM_REG; i++) {
         if (is_reg_empty(ndks_boot.freemem[i])) {
             reserve_region(pptr_to_paddr_reg(reg));
             ndks_boot.freemem[i] = reg;
@@ -401,15 +399,14 @@ BOOT_CODE static bool_t configure_sched_context(tcb_t *tcb, sched_context_t *sc_
 
 BOOT_CODE bool_t init_sched_control(cap_t root_cnode_cap, word_t num_nodes)
 {
-    bool_t ret = true;
     seL4_SlotPos slot_pos_before = ndks_boot.slot_pos_cur;
-    /* create a sched control cap for each core */
-    for (int i = 0; i < num_nodes && ret; i++) {
-        ret = provide_cap(root_cnode_cap, cap_sched_control_cap_new(i));
-    }
 
-    if (!ret) {
-        return false;
+    /* create a sched control cap for each core */
+    for (unsigned int i = 0; i < num_nodes; i++) {
+        if (!provide_cap(root_cnode_cap, cap_sched_control_cap_new(i))) {
+            printf("can't init sched_control for node %u, provide_cap() failed\n", i);
+            return false;
+        }
     }
 
     /* update boot info with slot region for sched control caps */
@@ -427,7 +424,7 @@ BOOT_CODE bool_t create_idle_thread(void)
     pptr_t pptr;
 
 #ifdef ENABLE_SMP_SUPPORT
-    for (int i = 0; i < CONFIG_MAX_NUM_NODES; i++) {
+    for (unsigned int i = 0; i < CONFIG_MAX_NUM_NODES; i++) {
 #endif /* ENABLE_SMP_SUPPORT */
         pptr = (pptr_t) &ksIdleThreadTCB[SMP_TERNARY(i, 0)];
         NODE_STATE_ON_CORE(ksIdleThread, i) = TCB_PTR(pptr + TCB_OFFSET);
@@ -581,7 +578,7 @@ BOOT_CODE static bool_t provide_untyped_cap(
     return ret;
 }
 
-BOOT_CODE bool_t create_untypeds_for_region(
+BOOT_CODE static bool_t create_untypeds_for_region(
     cap_t      root_cnode_cap,
     bool_t     device_memory,
     region_t   reg,
@@ -656,7 +653,6 @@ BOOT_CODE bool_t create_device_untypeds(cap_t root_cnode_cap, seL4_SlotPos slot_
 BOOT_CODE bool_t create_kernel_untypeds(cap_t root_cnode_cap, region_t boot_mem_reuse_reg,
                                         seL4_SlotPos first_untyped_slot)
 {
-    word_t     i;
     region_t   reg;
 
     /* if boot_mem_reuse_reg is not empty, we can create UT objs from boot code/data frames */
@@ -665,7 +661,7 @@ BOOT_CODE bool_t create_kernel_untypeds(cap_t root_cnode_cap, region_t boot_mem_
     }
 
     /* convert remaining freemem into UT objects and provide the caps */
-    for (i = 0; i < MAX_NUM_FREEMEM_REG; i++) {
+    for (word_t i = 0; i < MAX_NUM_FREEMEM_REG; i++) {
         reg = ndks_boot.freemem[i];
         ndks_boot.freemem[i] = REG_EMPTY;
         if (!create_untypeds_for_region(root_cnode_cap, false, reg, first_untyped_slot)) {
@@ -685,7 +681,7 @@ BOOT_CODE void bi_finalise(void)
     };
 }
 
-static inline pptr_t ceiling_kernel_window(pptr_t p)
+BOOT_CODE static inline pptr_t ceiling_kernel_window(pptr_t p)
 {
     /* Adjust address if it exceeds the kernel window
      * Note that we compare physical address in case of overflow.
@@ -696,28 +692,61 @@ static inline pptr_t ceiling_kernel_window(pptr_t p)
     return p;
 }
 
-/* we can't delcare arrays on the stack, so this is space for
- * the below function to use. */
-static BOOT_DATA region_t avail_reg[MAX_NUM_FREEMEM_REG];
+/* we can't declare arrays on the stack, so this is space for
+ * the function below to use. */
+BOOT_BSS static region_t avail_reg[MAX_NUM_FREEMEM_REG];
 /**
  * Dynamically initialise the available memory on the platform.
  * A region represents an area of memory.
  */
-BOOT_CODE void init_freemem(word_t n_available, const p_region_t *available,
-                            word_t n_reserved, region_t *reserved,
-                            v_region_t it_v_reg, word_t extra_bi_size_bits)
+BOOT_CODE bool_t init_freemem(word_t n_available, const p_region_t *available,
+                              word_t n_reserved, const region_t *reserved,
+                              v_region_t it_v_reg, word_t extra_bi_size_bits)
 {
+    /* The system configuration is broken if no region is available */
+    if (0 == n_available) {
+        printf("ERROR: no memory regions available\n");
+        return false;
+    }
+
     /* Force ordering and exclusivity of reserved regions */
-    for (word_t i = 0; n_reserved > 0 && i < n_reserved - 1; i++) {
-        assert(reserved[i].start <= reserved[i].end);
-        assert(reserved[i].end <= reserved[i + 1].start);
+    for (word_t i = 0; i < n_reserved; i++) {
+        const region_t *r = &reserved[i];
+
+        /* Reserved regions must be sane, the size is allowed to be zero */
+        if (r->start > r->end) {
+            printf("ERROR: reserved region %"SEL4_PRIu_word" has start > end\n", i);
+            return false;
+        }
+
+        /* regions must be ordered and must not overlap */
+        if ((i > 0) && (r->start < reserved[i - 1].end)) {
+            printf("ERROR: reserved region %"SEL4_PRIu_word" in wrong order\n", i);
+            return false;
+        }
     }
 
     /* Force ordering and exclusivity of available regions */
-    assert(n_available > 0);
-    for (word_t i = 0; i < n_available - 1; i++) {
-        assert(available[i].start < available[i].end);
-        assert(available[i].end <= available[i + 1].start);
+    for (word_t i = 0; i < n_available; i++) {
+        const p_region_t *r = &available[i];
+
+        /* Available regions must be sane */
+        if (r->start > r->end) {
+            printf("ERROR: memory region %"SEL4_PRIu_word" has start > end\n", i);
+            return false;
+        }
+
+        /* Available regions can't be empty */
+        if (r->start == r->end) {
+            printf("ERROR: memory region %"SEL4_PRIu_word" empty\n", i);
+            return false;
+        }
+
+        /* regions must be ordered and must not overlap */
+        if ((i > 0) && (r->start < available[i - 1].end)) {
+            printf("ERROR: memory region %"SEL4_PRIu_word" in wrong order\n", i);
+            return false;
+        }
     }
 
     for (word_t i = 0; i < MAX_NUM_FREEMEM_REG; i++) {
@@ -791,8 +820,8 @@ BOOT_CODE void init_freemem(word_t n_available, const p_region_t *available,
     /* now try to fit the root server objects into a region */
     word_t i = MAX_NUM_FREEMEM_REG - 1;
     if (!is_reg_empty(ndks_boot.freemem[i])) {
-        printf("Insufficient MAX_NUM_FREEMEM_REG");
-        halt();
+        printf("Insufficient MAX_NUM_FREEMEM_REG\n");
+        return false;
     }
     /* skip any empty regions */
     for (; is_reg_empty(ndks_boot.freemem[i]) && i >= 0; i--);
@@ -816,4 +845,6 @@ BOOT_CODE void init_freemem(word_t n_available, const p_region_t *available,
             ndks_boot.freemem[next] = ndks_boot.freemem[i];
         }
     }
+
+    return true;
 }

@@ -18,19 +18,13 @@
 #include <plat/machine/hardware.h>
 #include <machine.h>
 
-/* pointer to the end of boot code/data in kernel image */
-/* need a fake array to get the pointer from the linker script */
-extern char ki_boot_end[1];
-/* pointer to end of kernel image */
-extern char ki_end[1];
-
 #ifdef ENABLE_SMP_SUPPORT
-BOOT_DATA static volatile word_t node_boot_lock = 0;
+BOOT_BSS static volatile word_t node_boot_lock;
 #endif
 
 /* kernel image + [extra bootinfo] + user image */
 #define MAX_RESERVED 3
-BOOT_DATA static region_t res_reg[MAX_RESERVED];
+BOOT_BSS static region_t res_reg[MAX_RESERVED];
 
 BOOT_CODE static bool_t create_untypeds(cap_t root_cnode_cap, region_t boot_mem_reuse_reg)
 {
@@ -74,8 +68,9 @@ BOOT_CODE cap_t create_mapped_it_frame_cap(cap_t pd_cap, pptr_t pptr, vptr_t vpt
     return cap;
 }
 
-BOOT_CODE static void arch_init_freemem(region_t ui_reg, v_region_t ui_v_reg,
-                                        region_t dtb_reg, word_t extra_bi_size_bits)
+BOOT_CODE static bool_t arch_init_freemem(region_t ui_reg, v_region_t ui_v_reg,
+                                          region_t dtb_reg,
+                                          word_t extra_bi_size_bits)
 {
     // This looks a bit awkward as our symbols are a reference in the kernel image window, but
     // we want to do all allocations in terms of the main kernel window, so we do some translation
@@ -94,8 +89,8 @@ BOOT_CODE static void arch_init_freemem(region_t ui_reg, v_region_t ui_v_reg,
     res_reg[index].end = ui_reg.end;
     index += 1;
 
-    init_freemem(get_num_avail_p_regs(), get_avail_p_regs(), index, res_reg, ui_v_reg,
-                 extra_bi_size_bits);
+    return init_freemem(get_num_avail_p_regs(), get_avail_p_regs(), index,
+                        res_reg, ui_v_reg, extra_bi_size_bits);
 }
 
 BOOT_CODE static void init_irqs(cap_t root_cnode_cap)
@@ -257,7 +252,10 @@ static BOOT_CODE bool_t try_init_kernel(
     init_plat();
 
     /* make the free memory available to alloc_region() */
-    arch_init_freemem(ui_reg, it_v_reg, dtb_reg, extra_bi_size_bits);
+    if (!arch_init_freemem(ui_reg, it_v_reg, dtb_reg, extra_bi_size_bits)) {
+        printf("ERROR: free memory management initialization failed\n");
+        return false;
+    }
 
     /* create the root cnode */
     root_cnode_cap = create_root_cnode();
@@ -367,7 +365,6 @@ static BOOT_CODE bool_t try_init_kernel(
         return false;
     }
 
-
     /* create the initial thread */
     tcb_t *initial = create_initial_thread(
                          root_cnode_cap,
@@ -391,7 +388,7 @@ static BOOT_CODE bool_t try_init_kernel(
         return false;
     }
 
-    /* no shared-frame caps (RISCV has no multikernel support) */
+    /* no shared-frame caps (RISC-V has no multikernel support) */
     ndks_boot.bi_frame->sharedFrames = S_REG_EMPTY;
 
     /* finalise the bootinfo frame */
